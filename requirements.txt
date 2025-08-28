@@ -7,3 +7,4 @@ huggingface-hub>=0.23.0
 faiss-cpu
 tiktoken
 sentence-transformers
+pypdf
