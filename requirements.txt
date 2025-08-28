@@ -8,3 +8,4 @@ faiss-cpu
 tiktoken
 sentence-transformers
 pypdf
+pytz
