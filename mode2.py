@@ -13,7 +13,7 @@ import tiktoken
 from datetime import datetime
 import pytz
 
-# Inject custom CSS for chat-like styling
+# Inject custom CSS for chat-like styling and PDF data display
 st.markdown("""
     <style>
     [data-testid="stAppViewContainer"] {
@@ -48,6 +48,15 @@ st.markdown("""
         background-color: #F0F0F0;
         margin-right: auto;
     }
+    .pdf-data {
+        background-color: #f9f9f9;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        max-height: 300px;
+        overflow-y: auto;
+        margin-top: 20px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -60,7 +69,7 @@ with st.sidebar:
     - **Upload**: PDF or TXT files.
     - **Index**: FAISS vector store.
     - **Chat**: Powered by Groq AI.
-    - **Features**: Exact text matching, token usage, and comparison.
+    - **Features**: Exact text matching, full PDF data, and comparison.
     """)
     models = {
         "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B", "max_tokens": 8192},
@@ -85,6 +94,7 @@ def estimate_tokens(text, model="gpt-3.5-turbo"):
 @st.cache_resource
 def build_vector_store(uploaded_files):
     docs = []
+    full_text = ""
     for uploaded_file in uploaded_files:
         file_extension = uploaded_file.name.split('.')[-1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
@@ -107,7 +117,8 @@ def build_vector_store(uploaded_files):
             for doc in loaded_docs:
                 doc.metadata["file_name"] = uploaded_file.name
                 doc.metadata["page"] = doc.metadata.get("page", len(docs) + 1)
-            docs.extend(loaded_docs)
+                docs.append(doc)
+                full_text += doc.page_content + "\n"
         finally:
             os.unlink(tmp_path)
     
@@ -120,7 +131,7 @@ def build_vector_store(uploaded_files):
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(splits, embeddings)
     
-    return vectorstore
+    return vectorstore, full_text
 
 # Initialize session state
 if "chat_history" not in st.session_state:
@@ -129,6 +140,8 @@ if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 if "rag_chain" not in st.session_state:
     st.session_state.rag_chain = None
+if "pdf_full_text" not in st.session_state:
+    st.session_state.pdf_full_text = ""
 
 # Main Streamlit app
 st.title("📚 Document Reader Chatbot")
@@ -146,7 +159,7 @@ else:
     if uploaded_files:
         try:
             with st.spinner("Processing documents and building index..."):
-                st.session_state.vectorstore = build_vector_store(tuple(uploaded_files))
+                st.session_state.vectorstore, st.session_state.pdf_full_text = build_vector_store(tuple(uploaded_files))
             
             st.success("Documents processed! Ready to chat.")
             
@@ -199,7 +212,7 @@ else:
                         user_tokens = estimate_tokens(query)
                         bot_tokens = estimate_tokens(answer)
                         ist = pytz.timezone("Asia/Kolkata")
-                        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+                        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")  # 01:16 AM IST, August 29, 2025
                         st.session_state.chat_history.append({
                             "role": "user",
                             "content": query,
@@ -232,3 +245,11 @@ else:
     if st.button("Clear Chat History"):
         st.session_state.chat_history = []
         st.rerun()
+
+    # Display full PDF text below chat
+    if st.session_state.pdf_full_text:
+        st.markdown("### 📜 Full Extracted PDF Text")
+        st.markdown(f'<div class="pdf-data">Extracted at: {datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")}<br>{st.session_state.pdf_full_text}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown("### 📜 Full Extracted PDF Text")
+        st.info("No PDF data available. Please upload a document to view its content.")
