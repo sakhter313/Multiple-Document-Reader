@@ -57,6 +57,13 @@ st.markdown("""
         overflow-y: auto;
         margin-top: 20px;
     }
+    .error-box {
+        background-color: #ffebee;
+        padding: 10px;
+        border: 1px solid #ef9a9a;
+        border-radius: 5px;
+        margin-top: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -105,20 +112,28 @@ def build_vector_store(uploaded_files):
             if file_extension == 'pdf':
                 try:
                     loader = PyPDFLoader(tmp_path)
-                except ImportError:
-                    st.error("pypdf package not found. Please install it with `pip install pypdf`.")
+                    loaded_docs = loader.load()
+                    for doc in loaded_docs:
+                        doc.metadata["file_name"] = uploaded_file.name
+                        doc.metadata["page"] = doc.metadata.get("page", len(docs) + 1)
+                        docs.append(doc)
+                        full_text += doc.page_content + "\n"
+                except Exception as e:
+                    st.error(f"Error loading PDF {uploaded_file.name}: {str(e)}")
                     continue
             elif file_extension == 'txt':
                 loader = TextLoader(tmp_path)
+                loaded_docs = loader.load()
+                for doc in loaded_docs:
+                    doc.metadata["file_name"] = uploaded_file.name
+                    docs.append(doc)
+                    full_text += doc.page_content + "\n"
             else:
                 st.warning(f"Unsupported file type: {uploaded_file.name}. Skipping.")
                 continue
-            loaded_docs = loader.load()
-            for doc in loaded_docs:
-                doc.metadata["file_name"] = uploaded_file.name
-                doc.metadata["page"] = doc.metadata.get("page", len(docs) + 1)
-                docs.append(doc)
-                full_text += doc.page_content + "\n"
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {str(e)}")
+            continue
         finally:
             os.unlink(tmp_path)
     
@@ -142,6 +157,8 @@ if "rag_chain" not in st.session_state:
     st.session_state.rag_chain = None
 if "pdf_full_text" not in st.session_state:
     st.session_state.pdf_full_text = ""
+if "processing_errors" not in st.session_state:
+    st.session_state.processing_errors = []
 
 # Main Streamlit app
 st.title("📚 Document Reader Chatbot")
@@ -160,7 +177,7 @@ else:
         try:
             with st.spinner("Processing documents and building index..."):
                 st.session_state.vectorstore, st.session_state.pdf_full_text = build_vector_store(tuple(uploaded_files))
-            
+                st.session_state.processing_errors = []  # Clear errors on successful processing
             st.success("Documents processed! Ready to chat.")
             
             llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
@@ -184,8 +201,15 @@ else:
             )
         
         except Exception as e:
-            st.error(f"Error processing documents: {str(e)}")
-    
+            st.error(f"Error building index: {str(e)}")
+            st.session_state.processing_errors.append(str(e))
+
+    # Display processing errors
+    if st.session_state.processing_errors:
+        st.markdown("### ⚠️ Processing Errors")
+        for error in st.session_state.processing_errors:
+            st.markdown(f'<div class="error-box">{error}</div>', unsafe_allow_html=True)
+
     # Chat interface
     st.markdown("### 💬 Chat with the Bot")
     chat_container = st.container()
@@ -212,7 +236,7 @@ else:
                         user_tokens = estimate_tokens(query)
                         bot_tokens = estimate_tokens(answer)
                         ist = pytz.timezone("Asia/Kolkata")
-                        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")  # 01:16 AM IST, August 29, 2025
+                        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")  # 01:19 AM IST, August 29, 2025
                         st.session_state.chat_history.append({
                             "role": "user",
                             "content": query,
@@ -238,7 +262,8 @@ else:
                 
                 except Exception as e:
                     st.error(f"Error generating answer: {str(e)}")
-    
+                    st.session_state.processing_errors.append(str(e))
+
     else:
         st.info("Please upload documents to start chatting.")
 
