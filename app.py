@@ -57,12 +57,12 @@ with st.sidebar:
     Welcome to the AI-Powered Document Chatbot!
     
     - Upload multiple PDF or TXT files.
-    - The app builds a FAISS vector index for efficient retrieval.
-    - Chat with your documents using Groq AI for intelligent responses.
+    - The app uses FAISS for vector storage and Groq AI for responses.
+    - Enjoy a conversational experience with your documents.
     
     **Features:**
-    - Conversational history maintained.
-    - Source documents shown for transparency.
+    - Maintains chat history.
+    - Displays source context.
     - Select from latest Groq models.
     """)
     # Model selection
@@ -82,7 +82,7 @@ with st.sidebar:
     ]
     selected_model = st.selectbox("Select Groq Model", models, index=1)  # Default to llama-3.3-70b-versatile
 
-# Function to process uploaded files and build vector store
+# Function to process uploaded files and build FAISS vector store
 @st.cache_resource
 def build_vector_store(uploaded_files):
     docs = []
@@ -134,7 +134,7 @@ else:
     if uploaded_files:
         try:
             with st.spinner("Processing documents and building index... This may take a moment."):
-                vectorstore = build_vector_store(tuple(uploaded_files))  # Tuple for cache hash
+                vectorstore = build_vector_store(tuple(uploaded_files))
             
             st.success("Index built successfully! Start chatting below.")
             
@@ -153,17 +153,19 @@ else:
             qa_prompt = ChatPromptTemplate.from_messages(
                 [
                     ("system", system_prompt),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
+                    MessagesPlaceholder(variable_name="chat_history"),
+                    ("human", "{question}"),
                 ]
             )
             
-            # Conversational Retrieval Chain
+            # Conversational Retrieval Chain with explicit input keys
             qa_chain = ConversationalRetrievalChain.from_llm(
                 llm,
                 retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
                 combine_docs_chain_kwargs={"prompt": qa_prompt},
-                return_source_documents=True
+                return_source_documents=True,
+                input_key="question",  # Explicitly define input key
+                output_key="answer"   # Explicitly define output key
             )
             
             # Initialize chat history
@@ -192,33 +194,38 @@ else:
                     st.markdown(f'<div class="chat-message user-message">{prompt}</div>', unsafe_allow_html=True)
                 
                 with st.spinner("Thinking..."):
-                    response = qa_chain.invoke({
-                        "input": prompt,
-                        "chat_history": st.session_state.chat_history
-                    })
-                    answer = response["answer"]
-                    sources = response["source_documents"]
-                    
-                    # Update chat history
-                    st.session_state.chat_history.extend([
-                        HumanMessage(content=prompt),
-                        AIMessage(content=answer)
-                    ])
-                    
-                    # Add AI message
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": sources
-                    })
-                    with st.chat_message("assistant"):
-                        st.markdown(f'<div class="chat-message ai-message">{answer}</div>', unsafe_allow_html=True)
-                        with st.expander("🔍 Sources"):
-                            for i, doc in enumerate(sources, 1):
-                                st.markdown(f"**Chunk {i}:**")
-                                st.write(doc.page_content)
-                                st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
-                                st.divider()
+                    try:
+                        # Invoke chain with explicit input structure
+                        response = qa_chain.invoke({
+                            "question": prompt,
+                            "chat_history": st.session_state.chat_history
+                        })
+                        answer = response.get("answer", "Sorry, I couldn't generate a response.")
+                        sources = response.get("source_documents", [])
+                        
+                        # Update chat history
+                        st.session_state.chat_history.extend([
+                            HumanMessage(content=prompt),
+                            AIMessage(content=answer)
+                        ])
+                        
+                        # Add AI message
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources
+                        })
+                        with st.chat_message("assistant"):
+                            st.markdown(f'<div class="chat-message ai-message">{answer}</div>', unsafe_allow_html=True)
+                            if sources:
+                                with st.expander("🔍 Sources"):
+                                    for i, doc in enumerate(sources, 1):
+                                        st.markdown(f"**Chunk {i}:**")
+                                        st.write(doc.page_content)
+                                        st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
+                                        st.divider()
+                    except Exception as e:
+                        st.error(f"Error during query: {str(e)}")
         
         except Exception as e:
             st.error(f"Error processing documents: {str(e)}")
