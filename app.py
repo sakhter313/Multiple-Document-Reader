@@ -5,23 +5,22 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
-from langchain_core.messages import AIMessage, HumanMessage
+import tiktoken
+from datetime import datetime
 
-# Inject custom CSS for background image and styling
+# Inject custom CSS for chat-like styling
 st.markdown("""
     <style>
     [data-testid="stAppViewContainer"] {
-        background-image: url('https://source.unsplash.com/random/1920x1080/?abstract,technology,ai');
+        background-image: linear-gradient(to bottom right, #e0f7fa, #ffffff);
         background-size: cover;
-        background-position: center;
-        background-repeat: no-repeat;
     }
     [data-testid="stSidebar"] {
-        background-color: rgba(240, 244, 248, 0.85);
-        backdrop-filter: blur(10px);
+        background-color: #f0f4f8;
     }
     .stButton > button {
         background-color: #4CAF50;
@@ -29,60 +28,59 @@ st.markdown("""
         border-radius: 5px;
     }
     .stTextInput > div > div > input {
-        background-color: rgba(255, 255, 255, 0.9);
+        background-color: #ffffff;
         border: 1px solid #cccccc;
         border-radius: 5px;
-    }
-    .stSpinner > div {
-        color: #4CAF50;
     }
     .chat-message {
         padding: 10px;
         border-radius: 10px;
-        margin-bottom: 10px;
+        margin: 5px 0;
+        max-width: 80%;
     }
     .user-message {
         background-color: #DCF8C6;
+        margin-left: auto;
+        text-align: right;
     }
-    .ai-message {
-        background-color: #FFFFFF;
+    .bot-message {
+        background-color: #F0F0F0;
+        margin-right: auto;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # Sidebar content
 with st.sidebar:
-    st.title("📖 Document Chatbot")
+    st.title("📖 Document Reader Chatbot")
     st.markdown("""
-    Welcome to the AI-Powered Document Chatbot!
-    
-    - Upload multiple PDF or TXT files.
-    - The app uses FAISS for vector storage and Groq AI for responses.
-    - Enjoy a conversational experience with your documents.
-    
-    **Features:**
-    - Maintains chat history.
-    - Displays source context.
-    - Select from latest Groq models.
-    """)
-    # Model selection
-    models = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "meta-llama/llama-guard-4-12b",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "deepseek-r1-distill-llama-70b",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "moonshotai/kimi-k2-instruct",
-        "qwen/qwen3-32b",
-        "compound-beta",
-        "compound-beta-mini"
-    ]
-    selected_model = st.selectbox("Select Groq Model", models, index=1)  # Default to llama-3.3-70b-versatile
+    This chatbot uses RAG (Retrieval-Augmented Generation) to answer questions about your uploaded documents.
 
-# Function to process uploaded files and build FAISS vector store
+    - **Upload**: PDF or TXT files.
+    - **Index**: FAISS vector store for fast retrieval.
+    - **Chat**: Powered by Groq AI with selected model.
+    - **Features**: Token usage, model details, and chat history.
+    """)
+    models = {
+        "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B", "max_tokens": 8192},
+        "llama-3.3-70b-versatile": {"name": "LLaMA 3.3 70B", "max_tokens": 8192},
+        "meta-llama/llama-guard-4-12b": {"name": "LLaMA Guard 4 12B", "max_tokens": 4096},
+        "openai/gpt-oss-120b": {"name": "GPT-OSS 120B", "max_tokens": 16384},
+        "openai/gpt-oss-20b": {"name": "GPT-OSS 20B", "max_tokens": 8192}
+    }
+    selected_model = st.selectbox("Select Groq Model", list(models.keys()), index=1)
+    st.markdown(f"**Model Name**: {models[selected_model]['name']}")
+    st.markdown(f"**Max Tokens**: {models[selected_model]['max_tokens']}")
+
+# Function to estimate token count
+def estimate_tokens(text, model="gpt-3.5-turbo"):
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except:
+        return len(text.split()) * 2
+
+# Function to process uploaded files and build vector store
 @st.cache_resource
 def build_vector_store(uploaded_files):
     docs = []
@@ -115,12 +113,17 @@ def build_vector_store(uploaded_files):
     
     return vectorstore
 
+# Initialize session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "rag_chain" not in st.session_state:
+    st.session_state.rag_chain = None
+
 # Main Streamlit app
-st.title("🤖 Chat with Your Documents")
-st.markdown("""
-Upload your documents (PDF or TXT) and start a conversation about their content.  
-Powered by FAISS for retrieval and Groq for generation.
-""")
+st.title("📚 Document Reader Chatbot")
+st.markdown("Upload documents (PDF or TXT) and chat with the bot to get answers based on their content.")
 
 # File uploader
 uploaded_files = st.file_uploader("Upload documents", type=["pdf", "txt"], accept_multiple_files=True)
@@ -133,101 +136,90 @@ else:
 
     if uploaded_files:
         try:
-            with st.spinner("Processing documents and building index... This may take a moment."):
-                vectorstore = build_vector_store(tuple(uploaded_files))
+            with st.spinner("Processing documents and building index..."):
+                st.session_state.vectorstore = build_vector_store(tuple(uploaded_files))
             
-            st.success("Index built successfully! Start chatting below.")
+            st.success("Documents processed! Ready to chat.")
             
-            # Set up LLM with selected model
             llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
-            
-            # Prompt template for conversational chain
             system_prompt = (
-                "You are an assistant for question-answering tasks. "
-                "Use the following pieces of retrieved context to answer "
-                "the question. If you don't know the answer, say that you "
-                "don't know. Keep the answer concise."
+                "You are a helpful chatbot for answering questions based on uploaded documents. "
+                "Use the provided context to answer concisely in up to three sentences. "
+                "If you don't know the answer, admit it honestly."
                 "\n\n"
                 "{context}"
             )
-            qa_prompt = ChatPromptTemplate.from_messages(
+            prompt = ChatPromptTemplate.from_messages(
                 [
                     ("system", system_prompt),
-                    MessagesPlaceholder(variable_name="chat_history"),
-                    ("human", "{question}"),
+                    ("human", "{input}"),
                 ]
             )
-            
-            # Conversational Retrieval Chain with explicit input keys
-            qa_chain = ConversationalRetrievalChain.from_llm(
-                llm,
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
-                combine_docs_chain_kwargs={"prompt": qa_prompt},
-                return_source_documents=True,
-                input_key="question",  # Explicitly define input key
-                output_key="answer"   # Explicitly define output key
+            question_answer_chain = create_stuff_documents_chain(llm, prompt)
+            st.session_state.rag_chain = create_retrieval_chain(
+                st.session_state.vectorstore.as_retriever(search_kwargs={"k": 5}),
+                question_answer_chain
             )
-            
-            # Initialize chat history
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-            if "chat_history" not in st.session_state:
-                st.session_state.chat_history = []
-            
-            # Display chat history
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(f'<div class="chat-message {message["role"]}-message">{message["content"]}</div>', unsafe_allow_html=True)
-                    if "sources" in message:
-                        with st.expander("🔍 Sources"):
-                            for i, doc in enumerate(message["sources"], 1):
-                                st.markdown(f"**Chunk {i}:**")
-                                st.write(doc.page_content)
-                                st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
-                                st.divider()
-            
-            # Chat input
-            if prompt := st.chat_input("Ask a question about the documents:"):
-                # Add user message
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(f'<div class="chat-message user-message">{prompt}</div>', unsafe_allow_html=True)
-                
-                with st.spinner("Thinking..."):
-                    try:
-                        # Invoke chain with explicit input structure
-                        response = qa_chain.invoke({
-                            "question": prompt,
-                            "chat_history": st.session_state.chat_history
-                        })
-                        answer = response.get("answer", "Sorry, I couldn't generate a response.")
-                        sources = response.get("source_documents", [])
-                        
-                        # Update chat history
-                        st.session_state.chat_history.extend([
-                            HumanMessage(content=prompt),
-                            AIMessage(content=answer)
-                        ])
-                        
-                        # Add AI message
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "sources": sources
-                        })
-                        with st.chat_message("assistant"):
-                            st.markdown(f'<div class="chat-message ai-message">{answer}</div>', unsafe_allow_html=True)
-                            if sources:
-                                with st.expander("🔍 Sources"):
-                                    for i, doc in enumerate(sources, 1):
-                                        st.markdown(f"**Chunk {i}:**")
-                                        st.write(doc.page_content)
-                                        st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
-                                        st.divider()
-                    except Exception as e:
-                        st.error(f"Error during query: {str(e)}")
         
         except Exception as e:
             st.error(f"Error processing documents: {str(e)}")
+    
+    # Chat interface
+    st.markdown("### 💬 Chat with the Bot")
+    chat_container = st.container()
+    
+    with chat_container:
+        for message in st.session_state.chat_history:
+            if message["role"] == "user":
+                st.markdown(f'<div class="chat-message user-message">👤 {message["content"]} <br><small>Tokens: {message["tokens"]} | {message["timestamp"]}</small></div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="chat-message bot-message">🤖 {message["content"]} <br><small>Tokens: {message["tokens"]} | Model: {message["model"]} | {message["timestamp"]}</small></div>', unsafe_allow_html=True)
+    
+    if st.session_state.vectorstore and st.session_state.rag_chain:
+        with st.form(key="chat_form", clear_on_submit=True):
+            query = st.text_input("Your question:", placeholder="Ask about the documents...", key="chat_input")
+            submit_button = st.form_submit_button("Send")
+            
+            if submit_button and query:
+                try:
+                    with st.spinner("Generating answer..."):
+                        response = st.session_state.rag_chain.invoke({"input": query})
+                        answer = response["answer"]
+                        
+                        user_tokens = estimate_tokens(query)
+                        bot_tokens = estimate_tokens(answer)
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.chat_history.append({
+                            "role": "user",
+                            "content": query,
+                            "tokens": user_tokens,
+                            "timestamp": timestamp
+                        })
+                        st.session_state.chat_history.append({
+                            "role": "bot",
+                            "content": answer,
+                            "tokens": bot_tokens,
+                            "model": models[selected_model]["name"],
+                            "timestamp": timestamp
+                        })
+                        
+                        st.rerun()
+                
+                except Exception as e:
+                    st.error(f"Error generating answer: {str(e)}")
+    
     else:
-        st.info("Please upload at least one document to get started.")
+        st.info("Please upload documents to start chatting.")
+
+    if st.button("Clear Chat History"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+    if st.session_state.chat_history and st.session_state.rag_chain:
+        with st.expander("🔍 View Latest Retrieved Context"):
+            response = st.session_state.rag_chain.invoke({"input": st.session_state.chat_history[-2]["content"]})
+            for i, doc in enumerate(response["context"], 1):
+                st.markdown(f"**Chunk {i}:**")
+                st.write(doc.page_content)
+                st.write(f"*Source: {doc.metadata.get('source', 'unknown')} | Page: {doc.metadata.get('page', 'N/A')}*")
+                st.divider()
