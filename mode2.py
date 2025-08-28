@@ -270,11 +270,3 @@ else:
     if st.button("Clear Chat History"):
         st.session_state.chat_history = []
         st.rerun()
-
-    # Display full PDF text below chat
-    if st.session_state.pdf_full_text:
-        st.markdown("### 📜 Full Extracted PDF Text")
-        st.markdown(f'<div class="pdf-data">Extracted at: {datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")}<br>{st.session_state.pdf_full_text}</div>', unsafe_allow_html=True)
-    else:
-        st.markdown("### 📜 Full Extracted PDF Text")
-        st.info("No PDF data available. Please upload a document to view its content.")
