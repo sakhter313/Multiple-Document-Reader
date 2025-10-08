@@ -191,11 +191,11 @@ with st.sidebar:
     num_retrieved_docs = st.slider("Number of Retrieved Chunks", 1, 10, 3, help="How many top chunks to retrieve for the answer.")
     
     models = {
-        "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B", "max_tokens": 8192},
-        "llama-3.1-70b-versatile": {"name": "LLaMA 3.1 70B", "max_tokens": 8192},
-        "mixtral-8x7b-32768": {"name": "Mixtral 8x7B", "max_tokens": 32768},
-        "gemma-7b-it": {"name": "Gemma 7B", "max_tokens": 8192},
-        "gemma2-9b-it": {"name": "Gemma2 9B", "max_tokens": 8192}
+        "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B Instant", "max_tokens": 131072},
+        "llama-3.3-70b-versatile": {"name": "LLaMA 3.3 70B Versatile", "max_tokens": 32768},
+        "meta-llama/llama-guard-4-12b": {"name": "LLaMA Guard 4 12B", "max_tokens": 1024},
+        "openai/gpt-oss-120b": {"name": "GPT-OSS 120B", "max_tokens": 65536},
+        "openai/gpt-oss-20b": {"name": "GPT-OSS 20B", "max_tokens": 65536}
     }
     selected_model = st.selectbox("Select Groq Model", list(models.keys()), index=1, help="Choose the AI model for responses.")
     col1, col2 = st.columns(2)
