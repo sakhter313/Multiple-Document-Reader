@@ -191,8 +191,8 @@ with st.sidebar:
     num_retrieved_docs = st.slider("Number of Retrieved Chunks", 1, 10, 5, help="How many top chunks to retrieve for the answer.")
     
     models = {
-        "llama3-8b-8192": {"name": "LLaMA3 8B", "max_tokens": 8192},
-        "llama3-70b-8192": {"name": "LLaMA3 70B", "max_tokens": 8192},
+        "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B Instant", "max_tokens": 131072},
+        "llama-3.1-70b-versatile": {"name": "LLaMA 3.1 70B Versatile", "max_tokens": 32768},
         "mixtral-8x7b-32768": {"name": "Mixtral 8x7B", "max_tokens": 32768},
         "gemma-7b-it": {"name": "Gemma 7B", "max_tokens": 8192},
         "gemma2-9b-it": {"name": "Gemma2 9B", "max_tokens": 8192},
