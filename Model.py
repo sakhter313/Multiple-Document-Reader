@@ -102,10 +102,24 @@ st.markdown("""
         text-align: center;
         margin-top: 20px;
     }
+    .exact-quote {
+        background-color: #fff3cd;
+        padding: 10px;
+        border-left: 4px solid #ffc107;
+        border-radius: 5px;
+        margin: 10px 0;
+        font-style: italic;
+    }
+    .highlighted-match {
+        background-color: yellow;
+        padding: 2px 4px;
+        border-radius: 3px;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# Sidebar content with enhanced layout
+# Sidebar content with enhanced layout, including chunk controls
 with st.sidebar:
     st.title("📖 Document Reader Chatbot")
     st.markdown("""
@@ -115,10 +129,15 @@ with st.sidebar:
         <li><strong>Upload</strong>: PDF or TXT files.</li>
         <li><strong>Index</strong>: FAISS vector store.</li>
         <li><strong>Chat</strong>: Powered by Groq AI.</li>
-        <li><strong>New Features</strong>: Document stats, full text view, improved chat.</li>
+        <li><strong>New Features</strong>: Configurable chunking, document stats, full text view, improved chat.</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Chunking controls
+    st.markdown("### 🔧 Chunking Settings")
+    chunk_size = st.slider("Chunk Size (controls ~number of chunks)", 500, 2000, 1000, help="Larger size = fewer, larger chunks")
+    chunk_overlap = st.slider("Chunk Overlap", 0, 500, 200, help="Overlap between chunks for better context")
     
     models = {
         "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B", "max_tokens": 8192},
@@ -142,15 +161,16 @@ def estimate_tokens(text, model="gpt-3.5-turbo"):
     except:
         return len(text.split()) * 2
 
-# Enhanced function to process uploaded files and build vector store with stats
+# Enhanced function to process uploaded files and build vector store with stats, now taking chunk params
 @st.cache_resource
-def build_vector_store(uploaded_files):
+def build_vector_store(uploaded_files, chunk_size, chunk_overlap):
     docs = []
     full_text = ""
     total_pages = 0
     total_chars = 0
     for uploaded_file in uploaded_files:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
+        file_name = uploaded_file.name
+        file_extension = file_name.split('.')[-1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
@@ -160,8 +180,10 @@ def build_vector_store(uploaded_files):
                 loader = PyPDFLoader(tmp_path)
                 loaded_docs = loader.load()
                 for doc in loaded_docs:
-                    doc.metadata["file_name"] = uploaded_file.name
-                    doc.metadata["page"] = doc.metadata.get("page", total_pages + 1)
+                    # PyPDFLoader sets "page" as 0-indexed; convert to 1-indexed for display
+                    if "page" in doc.metadata:
+                        doc.metadata["page"] = doc.metadata["page"] + 1
+                    doc.metadata["file_name"] = file_name
                     docs.append(doc)
                     full_text += doc.page_content + "\n"
                     total_pages += 1
@@ -169,8 +191,9 @@ def build_vector_store(uploaded_files):
             elif file_extension == 'txt':
                 loader = TextLoader(tmp_path)
                 loaded_docs = loader.load()
-                for doc in loaded_docs:
-                    doc.metadata["file_name"] = uploaded_file.name
+                for i, doc in enumerate(loaded_docs):
+                    doc.metadata["file_name"] = file_name
+                    doc.metadata["page"] = 1  # TXT typically has no pages, set to 1
                     docs.append(doc)
                     full_text += doc.page_content + "\n"
                     total_chars += len(doc.page_content)
@@ -186,8 +209,14 @@ def build_vector_store(uploaded_files):
     if not docs:
         raise ValueError("No valid documents uploaded.")
     
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    # Split into n chunks based on chunk_size (n ≈ total_chars / chunk_size)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, 
+        chunk_overlap=chunk_overlap,
+        length_function=len  # Use character length for splitting
+    )
     splits = text_splitter.split_documents(docs)
+    num_chunks = len(splits)
     
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(splits, embeddings)
@@ -195,7 +224,13 @@ def build_vector_store(uploaded_files):
     # Calculate total tokens approx
     total_tokens = estimate_tokens(full_text)
     
-    return vectorstore, full_text, {"pages": total_pages, "chars": total_chars, "tokens": total_tokens, "files": len(uploaded_files)}
+    return vectorstore, full_text, {
+        "pages": total_pages, 
+        "chars": total_chars, 
+        "tokens": total_tokens, 
+        "files": len(uploaded_files),
+        "chunks": num_chunks
+    }
 
 # Initialize session state (unchanged)
 if "chat_history" not in st.session_state:
@@ -233,7 +268,10 @@ if uploaded_files:
         status_text.text("Processing documents...")
         progress_bar.progress(50)
         
-        st.session_state.vectorstore, st.session_state.pdf_full_text, st.session_state.doc_stats = build_vector_store(tuple(uploaded_files))
+        # Pass chunk_size and chunk_overlap to build_vector_store
+        st.session_state.vectorstore, st.session_state.pdf_full_text, st.session_state.doc_stats = build_vector_store(
+            tuple(uploaded_files), chunk_size, chunk_overlap
+        )
         progress_bar.progress(100)
         status_text.text("Done! Building AI chain...")
         
@@ -241,9 +279,10 @@ if uploaded_files:
         
         llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
         system_prompt = (
-            "You are a precise chatbot for answering questions based on uploaded documents. "
-            "Return the exact text from the provided context when possible, limited to three sentences. "
-            "If an exact match is not found, provide a concise summary based on the context, and state that it's a summary."
+            "You are a precise extraction assistant. For the user's question, identify the most relevant chunk from the context below. "
+            "Quote the exact text from that chunk as your answer, limited to the most pertinent 3 sentences. "
+            "Enclose the exact quote in double quotes. Do not paraphrase or add your own words unless the exact text does not fully answer the question. "
+            "If no exact match, state 'No exact match found' and provide a brief summary from the context."
             "\n\n"
             "{context}"
         )
@@ -261,14 +300,16 @@ if uploaded_files:
         
         st.success("✅ **Documents processed successfully!** Ready to chat.")
         
-        # Display document stats and list
+        # Display document stats and list, now including chunks
         st.markdown("### 📊 Document Overview")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Files", st.session_state.doc_stats["files"])
         with col2:
             st.metric("Pages", st.session_state.doc_stats["pages"])
         with col3:
+            st.metric("Chunks", st.session_state.doc_stats["chunks"])
+        with col4:
             st.metric("Tokens", f"{st.session_state.doc_stats['tokens']:,}")
         
         # List of uploaded files (simplified)
@@ -300,8 +341,12 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
     # Display chat history using st.chat_message
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            st.caption(f"Tokens: {message['tokens']} | {message['timestamp']}" + (f" | Model: {message.get('model', '')}" if message["role"] == "bot" else ""))
+            if message["role"] == "assistant":
+                # Highlight exact quote in the response
+                st.markdown(f'<div class="exact-quote">"{message["content"]}"</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(message["content"])
+            st.caption(f"Tokens: {message['tokens']} | {message['timestamp']}" + (f" | Model: {message.get('model', '')}" if message["role"] == "assistant" else ""))
     
     # Chat input
     if prompt := st.chat_input("Ask a question about your documents..."):
@@ -320,7 +365,7 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
         
         # Generate response
         with st.chat_message("assistant"):
-            with st.spinner("🤖 Thinking..."):
+            with st.spinner("🤖 Extracting exact answer..."):
                 try:
                     response = st.session_state.rag_chain.invoke({"input": prompt})
                     answer = response["answer"]
@@ -335,15 +380,32 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                         "timestamp": timestamp
                     })
                     
-                    st.markdown(answer)
+                    # Display the exact answer with highlighting
+                    st.markdown(f'<div class="exact-quote">"{answer}"</div>', unsafe_allow_html=True)
                     st.caption(f"Tokens: {bot_tokens} | Model: {models[selected_model]['name']} | {timestamp}")
                     
-                    # Display exact context
-                    with st.expander("📑 View Source Context", expanded=True):
+                    # Always display exact chunks for verification with highlighting
+                    with st.expander("📑 Exact Retrieved Chunks (Source Context)", expanded=True):
+                        st.info("These are the exact chunks retrieved from your documents. The answer above is derived directly from them. Highlighted parts show the exact quoted text used.")
+                        clean_answer = answer.strip().strip('"').strip()
                         for i, doc in enumerate(context, 1):
-                            st.markdown(f"**Chunk {i}** - Page {doc.metadata.get('page', 'N/A')} | File: {doc.metadata.get('file_name', 'unknown')}")
-                            st.write(doc.page_content)
-                            st.divider()
+                            with st.container():
+                                page_num = doc.metadata.get('page', 'N/A')
+                                file_name = doc.metadata.get('file_name', 'unknown')
+                                st.markdown(f"**Chunk {i}** - **Page {page_num}** | **File: {file_name}**")
+                                
+                                # Highlight the answer text if present in this chunk
+                                if clean_answer and clean_answer in doc.page_content:
+                                    highlighted_text = doc.page_content.replace(
+                                        clean_answer, 
+                                        f'<span class="highlighted-match">{clean_answer}</span>'
+                                    )
+                                    st.markdown(f'<div class="exact-quote">{highlighted_text}</div>', unsafe_allow_html=True)
+                                    st.success(f"✅ Exact match found in this chunk (Page {page_num})!")
+                                else:
+                                    st.markdown(f'<div class="exact-quote">{doc.page_content}</div>', unsafe_allow_html=True)
+                                
+                                st.divider()
                 
                 except Exception as e:
                     st.error(f"Error generating answer: {str(e)}")
