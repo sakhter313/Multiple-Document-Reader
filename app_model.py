@@ -7,14 +7,14 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_groq import ChatGroq
 import tiktoken
 from datetime import datetime
 import pytz
 import json
 from io import StringIO
-import base64
+from langchain_core.messages import HumanMessage, AIMessage
 
 # Enhanced custom CSS for a more modern and attractive look with dark mode option
 st.markdown("""
@@ -170,7 +170,7 @@ with st.sidebar:
         <li><strong>Upload</strong>: PDF, TXT, DOCX, or CSV files.</li>
         <li><strong>Index</strong>: FAISS vector store with hybrid search option.</li>
         <li><strong>Chat</strong>: Powered by Groq AI with multi-turn support.</li>
-        <li><strong>New Features</strong>: Configurable chunking, document stats, full text view, improved chat, export history, hybrid retrieval, dark mode, similarity scores.</li>
+        <li><strong>New Features</strong>: Configurable chunking, document stats, full text view, improved chat, export history, hybrid retrieval, dark mode.</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -187,15 +187,15 @@ with st.sidebar:
     
     # Retrieval settings
     st.markdown("### ⚙️ Retrieval Settings")
-    use_hybrid_search = st.checkbox("Enable Hybrid Search (BM25 + Embeddings)", value=False, help="Combines keyword and semantic search for better accuracy.")
-    num_retrieved_docs = st.slider("Number of Retrieved Chunks", 1, 10, 3, help="How many top chunks to retrieve for the answer.")
+    use_hybrid_search = st.checkbox("Enable Hybrid Search (BM25 + Embeddings)", value=True, help="Combines keyword and semantic search for better accuracy.")
+    num_retrieved_docs = st.slider("Number of Retrieved Chunks", 1, 10, 5, help="How many top chunks to retrieve for the answer.")
     
     models = {
-        "llama-3.1-8b-instant": {"name": "LLaMA 3.1 8B Instant", "max_tokens": 131072},
-        "llama-3.3-70b-versatile": {"name": "LLaMA 3.3 70B Versatile", "max_tokens": 32768},
-        "meta-llama/llama-guard-4-12b": {"name": "LLaMA Guard 4 12B", "max_tokens": 1024},
-        "openai/gpt-oss-120b": {"name": "GPT-OSS 120B", "max_tokens": 65536},
-        "openai/gpt-oss-20b": {"name": "GPT-OSS 20B", "max_tokens": 65536}
+        "llama3-8b-8192": {"name": "LLaMA3 8B", "max_tokens": 8192},
+        "llama3-70b-8192": {"name": "LLaMA3 70B", "max_tokens": 8192},
+        "mixtral-8x7b-32768": {"name": "Mixtral 8x7B", "max_tokens": 32768},
+        "gemma-7b-it": {"name": "Gemma 7B", "max_tokens": 8192},
+        "gemma2-9b-it": {"name": "Gemma2 9B", "max_tokens": 8192},
     }
     selected_model = st.selectbox("Select Groq Model", list(models.keys()), index=1, help="Choose the AI model for responses.")
     col1, col2 = st.columns(2)
@@ -214,7 +214,7 @@ def estimate_tokens(text, model="gpt-3.5-turbo"):
 
 # Enhanced function to process uploaded files and build vector store with stats, supporting more file types
 @st.cache_resource
-def build_vector_store(uploaded_files, chunk_size, chunk_overlap, use_hybrid_search):
+def build_vector_store(uploaded_files, chunk_size, chunk_overlap, use_hybrid_search, num_retrieved_docs):
     docs = []
     full_text = ""
     total_pages = 0
@@ -286,13 +286,11 @@ def build_vector_store(uploaded_files, chunk_size, chunk_overlap, use_hybrid_sea
     splits = text_splitter.split_documents(docs)
     num_chunks = len(splits)
     
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")  # Better embedding model for improved retrieval
     
     if use_hybrid_search:
-        # For hybrid search, we can use FAISS with a keyword index, but for simplicity, we'll use ensemble retriever if possible.
-        # Note: LangChain supports EnsembleRetriever for hybrid, but requires BM25 or similar.
         from langchain.retrievers import BM25Retriever, EnsembleRetriever
-        bm25_retriever = BM25Retriever.from_documents(splits)
+        bm25_retriever = BM25Retriever.from_documents(splits, k=num_retrieved_docs)
         faiss_vectorstore = FAISS.from_documents(splits, embeddings)
         faiss_retriever = faiss_vectorstore.as_retriever(search_kwargs={"k": num_retrieved_docs})
         ensemble_retriever = EnsembleRetriever(retrievers=[bm25_retriever, faiss_retriever], weights=[0.5, 0.5])
@@ -348,25 +346,26 @@ with tab1:
             progress_bar.progress(50)
             
             st.session_state.retriever, st.session_state.pdf_full_text, st.session_state.doc_stats = build_vector_store(
-                tuple(uploaded_files), chunk_size, chunk_overlap, use_hybrid_search
+                tuple(uploaded_files), chunk_size, chunk_overlap, use_hybrid_search, num_retrieved_docs
             )
             progress_bar.progress(100)
             status_text.text("Done! Building AI chain...")
             
             st.session_state.processing_errors = []
             
-            llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model)
+            llm = ChatGroq(groq_api_key=groq_api_key, model=selected_model, temperature=0)
             system_prompt = (
-                "You are a precise extraction assistant. Use the following context to answer the question. "
-                "Quote the exact relevant text in double quotes. Limit to the most pertinent information. "
-                "If needed, summarize briefly but prioritize exact quotes. "
-                "If no relevant info, say 'No relevant information found'."
+                "You are a helpful assistant that answers questions directly based on the provided context from documents. "
+                "Provide accurate, concise, and relevant answers. Quote exact relevant text in double quotes where applicable. "
+                "If the information is not in the context, state 'No relevant information found in the documents.' "
+                "Keep responses clear and focused."
                 "\n\n"
                 "{context}"
             )
             prompt = ChatPromptTemplate.from_messages(
                 [
                     ("system", system_prompt),
+                    MessagesPlaceholder("chat_history"),
                     ("human", "{input}"),
                 ]
             )
@@ -419,9 +418,7 @@ with tab2:
         for i, message in enumerate(st.session_state.chat_history):
             with st.chat_message(message["role"]):
                 if message["role"] == "assistant":
-                    st.markdown(f'<div class="exact-quote">"{message["content"]}"</div>', unsafe_allow_html=True)
-                    if "similarity_score" in message:
-                        st.caption(f"Similarity Score: {message['similarity_score']:.2f}")
+                    st.markdown(f'<div class="exact-quote">{message["content"]}</div>', unsafe_allow_html=True)
                 else:
                     st.markdown(message["content"])
                 st.caption(f"Tokens: {message['tokens']} | {message['timestamp']}" + (f" | Model: {message.get('model', '')}" if message["role"] == "assistant" else ""))
@@ -450,15 +447,17 @@ with tab2:
             with st.chat_message("assistant"):
                 with st.spinner("🤖 Extracting exact answer..."):
                     try:
-                        # For multi-turn, append history to input if needed, but for simplicity, keep as is.
-                        response = st.session_state.rag_chain.invoke({"input": prompt})
+                        # Convert chat history to LangChain messages
+                        history_messages = []
+                        for msg in st.session_state.chat_history[:-1]:  # Exclude the current user prompt
+                            if msg["role"] == "user":
+                                history_messages.append(HumanMessage(content=msg["content"]))
+                            else:
+                                history_messages.append(AIMessage(content=msg["content"]))
+                        
+                        response = st.session_state.rag_chain.invoke({"input": prompt, "chat_history": history_messages})
                         answer = response["answer"]
                         context = response["context"]
-                        
-                        # Calculate average similarity score (assuming FAISS provides scores)
-                        # Note: For ensemble, scores may not be directly available; approximate.
-                        similarity_scores = [0.8] * len(context)  # Placeholder; in real, use retriever.invoke and get scores.
-                        avg_score = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0
                         
                         bot_tokens = estimate_tokens(answer)
                         st.session_state.chat_history.append({
@@ -466,12 +465,11 @@ with tab2:
                             "content": answer,
                             "tokens": bot_tokens,
                             "model": models[selected_model]["name"],
-                            "timestamp": timestamp,
-                            "similarity_score": avg_score
+                            "timestamp": timestamp
                         })
                         
-                        st.markdown(f'<div class="exact-quote">"{answer}"</div>', unsafe_allow_html=True)
-                        st.caption(f"Tokens: {bot_tokens} | Model: {models[selected_model]['name']} | {timestamp} | Similarity: {avg_score:.2f}")
+                        st.markdown(f'<div class="exact-quote">{answer}</div>', unsafe_allow_html=True)
+                        st.caption(f"Tokens: {bot_tokens} | Model: {models[selected_model]['name']} | {timestamp}")
                         
                         # Display retrieved chunks with highlighting
                         with st.expander("📑 Retrieved Chunks (Sources)", expanded=False):
