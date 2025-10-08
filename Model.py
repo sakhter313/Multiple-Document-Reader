@@ -294,7 +294,7 @@ if uploaded_files:
         )
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
         st.session_state.rag_chain = create_retrieval_chain(
-            st.session_state.vectorstore.as_retriever(search_kwargs={"k": 5}),
+            st.session_state.vectorstore.as_retriever(search_kwargs={"k": 1}),  # Single most relevant chunk
             question_answer_chain
         )
         
@@ -369,7 +369,7 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                 try:
                     response = st.session_state.rag_chain.invoke({"input": prompt})
                     answer = response["answer"]
-                    context = response["context"]
+                    context = response["context"]  # Now a single chunk
                     
                     bot_tokens = estimate_tokens(answer)
                     st.session_state.chat_history.append({
@@ -384,28 +384,26 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                     st.markdown(f'<div class="exact-quote">"{answer}"</div>', unsafe_allow_html=True)
                     st.caption(f"Tokens: {bot_tokens} | Model: {models[selected_model]['name']} | {timestamp}")
                     
-                    # Always display exact chunks for verification with highlighting
-                    with st.expander("📑 Exact Retrieved Chunks (Source Context)", expanded=True):
-                        st.info("These are the exact chunks retrieved from your documents. The answer above is derived directly from them. Highlighted parts show the exact quoted text used.")
-                        clean_answer = answer.strip().strip('"').strip()
-                        for i, doc in enumerate(context, 1):
-                            with st.container():
-                                page_num = doc.metadata.get('page', 'N/A')
-                                file_name = doc.metadata.get('file_name', 'unknown')
-                                st.markdown(f"**Chunk {i}** - **Page {page_num}** | **File: {file_name}**")
-                                
-                                # Highlight the answer text if present in this chunk
-                                if clean_answer and clean_answer in doc.page_content:
-                                    highlighted_text = doc.page_content.replace(
-                                        clean_answer, 
-                                        f'<span class="highlighted-match">{clean_answer}</span>'
-                                    )
-                                    st.markdown(f'<div class="exact-quote">{highlighted_text}</div>', unsafe_allow_html=True)
-                                    st.success(f"✅ Exact match found in this chunk (Page {page_num})!")
-                                else:
-                                    st.markdown(f'<div class="exact-quote">{doc.page_content}</div>', unsafe_allow_html=True)
-                                
-                                st.divider()
+                    # Display the single exact chunk for verification with highlighting
+                    with st.expander("📑 Exact Retrieved Chunk (Source)", expanded=True):
+                        st.info("This is the single most relevant chunk retrieved from your documents. The answer above is derived directly from it. Highlighted part shows the exact quoted text used.")
+                        if context:  # Single doc
+                            doc = context[0]
+                            page_num = doc.metadata.get('page', 'N/A')
+                            file_name = doc.metadata.get('file_name', 'unknown')
+                            st.markdown(f"**Chunk 1** - **Page {page_num}** | **File: {file_name}**")
+                            
+                            # Highlight the answer text if present in this chunk
+                            clean_answer = answer.strip().strip('"').strip()
+                            if clean_answer and clean_answer in doc.page_content:
+                                highlighted_text = doc.page_content.replace(
+                                    clean_answer, 
+                                    f'<span class="highlighted-match">{clean_answer}</span>'
+                                )
+                                st.markdown(f'<div class="exact-quote">{highlighted_text}</div>', unsafe_allow_html=True)
+                                st.success(f"✅ Exact match found in this chunk (Page {page_num})!")
+                            else:
+                                st.markdown(f'<div class="exact-quote">{doc.page_content}</div>', unsafe_allow_html=True)
                 
                 except Exception as e:
                     st.error(f"Error generating answer: {str(e)}")
