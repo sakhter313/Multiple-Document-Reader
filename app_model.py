@@ -168,7 +168,7 @@ with st.sidebar:
     This chatbot uses RAG to provide exact answers from your uploaded documents. Enhanced with modern UI for better experience!
     <ul>
         <li><strong>Upload</strong>: PDF, TXT, DOCX, or CSV files.</li>
-        <li><strong>Index</strong>: FAISS vector store with hybrid search option.</li>
+        <li><strong>Index</strong>: FAISS vector store with optional hybrid search (requires rank_bm25).</li>
         <li><strong>Chat</strong>: Powered by Groq AI with multi-turn support.</li>
         <li><strong>New Features</strong>: Configurable chunking, document stats, full text view, improved chat, export history, hybrid retrieval, dark mode.</li>
     </ul>
@@ -187,7 +187,7 @@ with st.sidebar:
     
     # Retrieval settings
     st.markdown("### ⚙️ Retrieval Settings")
-    use_hybrid_search = st.checkbox("Enable Hybrid Search (BM25 + Embeddings)", value=True, help="Combines keyword and semantic search for better accuracy.")
+    use_hybrid_search = st.checkbox("Enable Hybrid Search (BM25 + Embeddings)", value=False, help="Combines keyword and semantic search for better accuracy. Requires 'rank_bm25' package installed.")
     num_retrieved_docs = st.slider("Number of Retrieved Chunks", 1, 10, 5, help="How many top chunks to retrieve for the answer.")
     
     models = {
@@ -289,12 +289,16 @@ def build_vector_store(uploaded_files, chunk_size, chunk_overlap, use_hybrid_sea
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")  # Better embedding model for improved retrieval
     
     if use_hybrid_search:
-        from langchain.retrievers import BM25Retriever, EnsembleRetriever
-        bm25_retriever = BM25Retriever.from_documents(splits, k=num_retrieved_docs)
-        faiss_vectorstore = FAISS.from_documents(splits, embeddings)
-        faiss_retriever = faiss_vectorstore.as_retriever(search_kwargs={"k": num_retrieved_docs})
-        ensemble_retriever = EnsembleRetriever(retrievers=[bm25_retriever, faiss_retriever], weights=[0.5, 0.5])
-        retriever = ensemble_retriever
+        try:
+            from langchain.retrievers import BM25Retriever, EnsembleRetriever
+            bm25_retriever = BM25Retriever.from_documents(splits, k=num_retrieved_docs)
+            faiss_vectorstore = FAISS.from_documents(splits, embeddings)
+            faiss_retriever = faiss_vectorstore.as_retriever(search_kwargs={"k": num_retrieved_docs})
+            ensemble_retriever = EnsembleRetriever(retrievers=[bm25_retriever, faiss_retriever], weights=[0.5, 0.5])
+            retriever = ensemble_retriever
+        except ImportError as e:
+            st.error(f"Hybrid search requires 'rank_bm25' package. Please install it with `pip install rank_bm25` or disable hybrid search. Error: {str(e)}")
+            raise
     else:
         vectorstore = FAISS.from_documents(splits, embeddings)
         retriever = vectorstore.as_retriever(search_kwargs={"k": num_retrieved_docs})
