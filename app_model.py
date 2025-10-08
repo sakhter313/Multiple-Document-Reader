@@ -110,6 +110,12 @@ st.markdown("""
         margin: 10px 0;
         font-style: italic;
     }
+    .highlighted-match {
+        background-color: yellow;
+        padding: 2px 4px;
+        border-radius: 3px;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -157,8 +163,10 @@ def build_vector_store(uploaded_files):
     full_text = ""
     total_pages = 0
     total_chars = 0
+    file_page_counter = {}  # To handle page numbering per file for TXT
     for uploaded_file in uploaded_files:
-        file_extension = uploaded_file.name.split('.')[-1].lower()
+        file_name = uploaded_file.name
+        file_extension = file_name.split('.')[-1].lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
@@ -167,9 +175,13 @@ def build_vector_store(uploaded_files):
             if file_extension == 'pdf':
                 loader = PyPDFLoader(tmp_path)
                 loaded_docs = loader.load()
+                file_page_counter[file_name] = len(loaded_docs)  # Actual pages from PDF
                 for doc in loaded_docs:
-                    doc.metadata["file_name"] = uploaded_file.name
-                    doc.metadata["page"] = doc.metadata.get("page", total_pages + 1)
+                    # PyPDFLoader already sets "page" metadata (1-based per file)
+                    doc.metadata["file_name"] = file_name
+                    # Ensure page is set correctly (use existing or fallback)
+                    if "page" not in doc.metadata:
+                        doc.metadata["page"] = total_pages + 1
                     docs.append(doc)
                     full_text += doc.page_content + "\n"
                     total_pages += 1
@@ -177,11 +189,15 @@ def build_vector_store(uploaded_files):
             elif file_extension == 'txt':
                 loader = TextLoader(tmp_path)
                 loaded_docs = loader.load()
+                if file_name not in file_page_counter:
+                    file_page_counter[file_name] = 1
                 for doc in loaded_docs:
-                    doc.metadata["file_name"] = uploaded_file.name
+                    doc.metadata["file_name"] = file_name
+                    doc.metadata["page"] = file_page_counter[file_name]  # Set to 1 for TXT
                     docs.append(doc)
                     full_text += doc.page_content + "\n"
                     total_chars += len(doc.page_content)
+                file_page_counter[file_name] += 1  # But since one doc, remains 1
             else:
                 st.warning(f"Unsupported file type: {uploaded_file.name}. Skipping.")
                 continue
@@ -314,7 +330,7 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                 st.markdown(f'<div class="exact-quote">"{message["content"]}"</div>', unsafe_allow_html=True)
             else:
                 st.markdown(message["content"])
-            st.caption(f"Tokens: {message['tokens']} | {message['timestamp']}" + (f" | Model: {message.get('model', '')}" if message["role"] == "bot" else ""))
+            st.caption(f"Tokens: {message['tokens']} | {message['timestamp']}" + (f" | Model: {message.get('model', '')}" if message["role"] == "assistant" else ""))
     
     # Chat input
     if prompt := st.chat_input("Ask a question about your documents..."):
@@ -352,13 +368,27 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                     st.markdown(f'<div class="exact-quote">"{answer}"</div>', unsafe_allow_html=True)
                     st.caption(f"Tokens: {bot_tokens} | Model: {models[selected_model]['name']} | {timestamp}")
                     
-                    # Always display exact chunks for verification
+                    # Always display exact chunks for verification with highlighting
                     with st.expander("📑 Exact Retrieved Chunks (Source Context)", expanded=True):
-                        st.info("These are the exact chunks retrieved from your documents. The answer above is derived directly from them.")
+                        st.info("These are the exact chunks retrieved from your documents. The answer above is derived directly from them. Highlighted parts show the exact quoted text used.")
+                        clean_answer = answer.strip().strip('"').strip()
                         for i, doc in enumerate(context, 1):
                             with st.container():
-                                st.markdown(f"**Chunk {i}** - Page {doc.metadata.get('page', 'N/A')} | File: {doc.metadata.get('file_name', 'unknown')}")
-                                st.markdown(f'<div class="exact-quote">{doc.page_content}</div>', unsafe_allow_html=True)
+                                page_num = doc.metadata.get('page', 'N/A')
+                                file_name = doc.metadata.get('file_name', 'unknown')
+                                st.markdown(f"**Chunk {i}** - **Page {page_num}** | **File: {file_name}**")
+                                
+                                # Highlight the answer text if present in this chunk
+                                if clean_answer and clean_answer in doc.page_content:
+                                    highlighted_text = doc.page_content.replace(
+                                        clean_answer, 
+                                        f'<span class="highlighted-match">{clean_answer}</span>'
+                                    )
+                                    st.markdown(f'<div class="exact-quote">{highlighted_text}</div>', unsafe_allow_html=True)
+                                    st.success(f"✅ Exact match found in this chunk (Page {page_num})!")
+                                else:
+                                    st.markdown(f'<div class="exact-quote">{doc.page_content}</div>', unsafe_allow_html=True)
+                                
                                 st.divider()
                 
                 except Exception as e:
