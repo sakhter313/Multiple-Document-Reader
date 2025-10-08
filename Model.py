@@ -98,6 +98,10 @@ st.markdown("""
         margin: 10px 0;
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
     }
+    .clear-button {
+        text-align: center;
+        margin-top: 20px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -211,19 +215,9 @@ if "processing_errors" not in st.session_state:
 st.title("📚 Enhanced Document Reader Chatbot")
 st.markdown("**Upload your PDF or TXT documents below and start chatting to extract precise insights!** 🚀")
 
-# Use columns for better layout
-col1, col2 = st.columns([3, 1])
-with col1:
-    uploaded_files = st.file_uploader("Choose files", type=["pdf", "txt"], accept_multiple_files=True, help="Select multiple PDF or TXT files to analyze.")
-with col2:
-    if st.button("🗑️ Clear All", type="secondary"):
-        st.session_state.chat_history = []
-        st.session_state.vectorstore = None
-        st.session_state.rag_chain = None
-        st.session_state.pdf_full_text = ""
-        st.session_state.doc_stats = {}
-        st.session_state.processing_errors = []
-        st.rerun()
+# Use columns for better layout - removed Clear All from here
+col1 = st.columns([3])[0]
+uploaded_files = col1.file_uploader("Choose files", type=["pdf", "txt"], accept_multiple_files=True, help="Select multiple PDF or TXT files to analyze.")
 
 # API Key check
 if "GROQ_API_KEY" not in st.secrets:
@@ -354,6 +348,18 @@ if st.session_state.vectorstore and st.session_state.rag_chain:
                 except Exception as e:
                     st.error(f"Error generating answer: {str(e)}")
                     st.session_state.processing_errors.append(str(e))
+    
+    # Clear All button placed below the chat (after assistant response when new prompt is submitted)
+    st.markdown('<div class="clear-button">', unsafe_allow_html=True)
+    if st.button("🗑️ Clear All", type="secondary", help="Clear chat history and reset the app"):
+        st.session_state.chat_history = []
+        st.session_state.vectorstore = None
+        st.session_state.rag_chain = None
+        st.session_state.pdf_full_text = ""
+        st.session_state.doc_stats = {}
+        st.session_state.processing_errors = []
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 else:
     # Welcome message if no documents
